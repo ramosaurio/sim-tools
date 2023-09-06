@@ -35,10 +35,10 @@ Use the hello-stk example to get started.
 
 	$ mkdir javacard
 	$ cd javacard
-	$ git clone https://git.osmocom.org/sim/sim-tools
 	$ git clone https://git.osmocom.org/sim/hello-stk
 	$ cd hello-stk
-	$ make
+	$ git submodule update --init --recursive
+	$ ant
 
 To install the applet onto a SIM card, first set the type of reader you are using.
 
