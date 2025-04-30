@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
 """ pySim: Card programmation logic
@@ -6,7 +5,8 @@
 
 #
 # Copyright (C) 2009-2010  Sylvain Munaut <tnt@246tNt.com>
-# Copyright (C) 2011  Harald Welte <laforge@gnumonks.org>
+# Copyright (C) 2011-2023  Harald Welte <laforge@gnumonks.org>
+# Copyright (C) 2017 Alexander.Chemeris <Alexander.Chemeris@gmail.com>
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -22,330 +22,170 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #
 
-from pySim.utils import b2h, h2b, swap_nibbles, rpad, lpad
-
-
-class Card(object):
-
-	def __init__(self, scc):
-		self._scc = scc
-
-	def _e_iccid(self, iccid):
-		return swap_nibbles(rpad(iccid, 20))
-
-	def _e_imsi(self, imsi):
-		"""Converts a string imsi into the value of the EF"""
-		l = (len(imsi) + 1) // 2	# Required bytes
-		oe = len(imsi) & 1			# Odd (1) / Even (0)
-		ei = '%02x' % l + swap_nibbles(lpad('%01x%s' % ((oe<<3)|1, imsi), 16))
-		return ei
-
-	def _e_plmn(self, mcc, mnc):
-		"""Converts integer MCC/MNC into 6 bytes for EF"""
-		return swap_nibbles(lpad('%d' % mcc, 3) + lpad('%d' % mnc, 3))
-
-	def reset(self):
-		self._scc.reset_card()
-
-
-class _MagicSimBase(Card):
-	"""
-	Theses cards uses several record based EFs to store the provider infos,
-	each possible provider uses a specific record number in each EF. The
-	indexes used are ( where N is the number of providers supported ) :
-	 - [2 .. N+1] for the operator name
-     - [1 .. N] for the programable EFs
-
-	* 3f00/7f4d/8f0c : Operator Name
-
-	bytes 0-15 : provider name, padded with 0xff
-	byte  16   : length of the provider name
-	byte  17   : 01 for valid records, 00 otherwise
-
-	* 3f00/7f4d/8f0d : Programmable Binary EFs
-
-	* 3f00/7f4d/8f0e : Programmable Record EFs
-
-	"""
-
-	@classmethod
-	def autodetect(kls, scc):
-		try:
-			for p, l, t in kls._files.values():
-				if not t:
-					continue
-				if scc.record_size(['3f00', '7f4d', p]) != l:
-					return None
-		except:
-			return None
-
-		return kls(scc)
-
-	def _get_count(self):
-		"""
-		Selects the file and returns the total number of entries
-		and entry size
-		"""
-		f = self._files['name']
-
-		r = self._scc.select_file(['3f00', '7f4d', f[0]])
-		rec_len = int(r[-1][28:30], 16)
-		tlen = int(r[-1][4:8],16)
-		rec_cnt = (tlen / rec_len) - 1;
-
-		if (rec_cnt < 1) or (rec_len != f[1]):
-			raise RuntimeError('Bad card type')
-
-		return rec_cnt
-
-	def program(self, p):
-		# Go to dir
-		self._scc.select_file(['3f00', '7f4d'])
-
-		# Home PLMN in PLMN_Sel format
-		hplmn = self._e_plmn(p['mcc'], p['mnc'])
-
-		# Operator name ( 3f00/7f4d/8f0c )
-		self._scc.update_record(self._files['name'][0], 2,
-			rpad(b2h(p['name']), 32)  + ('%02x' % len(p['name'])) + '01'
-		)
-
-		# ICCID/IMSI/Ki/HPLMN ( 3f00/7f4d/8f0d )
-		v = ''
-
-			# inline Ki
-		if self._ki_file is None:
-			v += p['ki']
-
-			# ICCID
-		v += '3f00' + '2fe2' + '0a' + self._e_iccid(p['iccid'])
-
-			# IMSI
-		v += '7f20' + '6f07' + '09' + self._e_imsi(p['imsi'])
-
-			# Ki
-		if self._ki_file:
-			v += self._ki_file + '10' + p['ki']
-
-			# PLMN_Sel
-		v+= '6f30' + '18' +  rpad(hplmn, 36)
-
-		self._scc.update_record(self._files['b_ef'][0], 1,
-			rpad(v, self._files['b_ef'][1]*2)
-		)
-
-		# SMSP ( 3f00/7f4d/8f0e )
-			# FIXME
-
-		# Write PLMN_Sel forcefully as well
-		r = self._scc.select_file(['3f00', '7f20', '6f30'])
-		tl = int(r[-1][4:8], 16)
-
-		hplmn = self._e_plmn(p['mcc'], p['mnc'])
-		self._scc.update_binary('6f30', hplmn + 'ff' * (tl-3))
-
-	def erase(self):
-		# Dummy
-		df = {}
-		for k, v in self._files.iteritems():
-			ofs = 1
-			fv = v[1] * 'ff'
-			if k == 'name':
-				ofs = 2
-				fv = fv[0:-4] + '0000'
-			df[v[0]] = (fv, ofs)
-
-		# Write
-		for n in range(0,self._get_count()):
-			for k, (msg, ofs) in df.iteritems():
-				self._scc.update_record(['3f00', '7f4d', k], n + ofs, msg)
-
-
-class SuperSim(_MagicSimBase):
-
-	name = 'supersim'
-
-	_files = {
-		'name' : ('8f0c', 18, True),
-		'b_ef' : ('8f0d', 74, True),
-		'r_ef' : ('8f0e', 50, True),
-	}
-
-	_ki_file = None
-
-
-class MagicSim(_MagicSimBase):
-
-	name = 'magicsim'
-
-	_files = {
-		'name' : ('8f0c', 18, True),
-		'b_ef' : ('8f0d', 130, True),
-		'r_ef' : ('8f0e', 102, False),
-	}
-
-	_ki_file = '6f1b'
-
-
-class FakeMagicSim(Card):
-	"""
-	Theses cards have a record based EF 3f00/000c that contains the provider
-	informations. See the program method for its format. The records go from
-	1 to N.
-	"""
-
-	name = 'fakemagicsim'
-
-	@classmethod
-	def autodetect(kls, scc):
-		try:
-			if scc.record_size(['3f00', '000c']) != 0x5a:
-				return None
-		except:
-			return None
-
-		return kls(scc)
-
-	def _get_infos(self):
-		"""
-		Selects the file and returns the total number of entries
-		and entry size
-		"""
-
-		r = self._scc.select_file(['3f00', '000c'])
-		rec_len = int(r[-1][28:30], 16)
-		tlen = int(r[-1][4:8],16)
-		rec_cnt = (tlen / rec_len) - 1;
-
-		if (rec_cnt < 1) or (rec_len != 0x5a):
-			raise RuntimeError('Bad card type')
-
-		return rec_cnt, rec_len
-
-	def program(self, p):
-		# Home PLMN
-		r = self._scc.select_file(['3f00', '7f20', '6f30'])
-		tl = int(r[-1][4:8], 16)
-
-		hplmn = self._e_plmn(p['mcc'], p['mnc'])
-		self._scc.update_binary('6f30', hplmn + 'ff' * (tl-3))
-
-		# Get total number of entries and entry size
-		rec_cnt, rec_len = self._get_infos()
-
-		# Set first entry
-		entry = (
-			'81' +								#  1b  Status: Valid & Active
-			rpad(b2h(p['name'][0:14]), 28) +	# 14b  Entry Name
-			self._e_iccid(p['iccid']) +			# 10b  ICCID
-			self._e_imsi(p['imsi']) +			#  9b  IMSI_len + id_type(9) + IMSI
-			p['ki'] +							# 16b  Ki
-			lpad(p['smsp'], 80)					# 40b  SMSP (padded with ff if needed)
-		)
-		self._scc.update_record('000c', 1, entry)
-
-	def erase(self):
-		# Get total number of entries and entry size
-		rec_cnt, rec_len = self._get_infos()
-
-		# Erase all entries
-		entry = 'ff' * rec_len
-		for i in range(0, rec_cnt):
-			self._scc.update_record('000c', 1+i, entry)
-
-class GrcardSim(Card):
-	"""
-	Greencard (grcard.cn) HZCOS GSM SIM
-	These cards have a much more regular ISO 7816-4 / TS 11.11 structure,
-	and use standard UPDATE RECORD / UPDATE BINARY commands except for Ki.
-	"""
-
-	name = 'grcardsim'
-
-	@classmethod
-	def autodetect(kls, scc):
-		return None
-
-	def program(self, p):
-		# We don't really know yet what ADM PIN 4 is about
-		#self._scc.verify_chv(4, h2b("4444444444444444"))
-
-		# Authenticate using ADM PIN 5
-		self._scc.verify_chv(5, h2b("4444444444444444"))
-
-		# EF.ICCID
-		r = self._scc.select_file(['3f00', '2fe2'])
-		data, sw = self._scc.update_binary('2fe2', self._e_iccid(p['iccid']))
-
-		# EF.IMSI
-		r = self._scc.select_file(['3f00', '7f20', '6f07'])
-		data, sw = self._scc.update_binary('6f07', self._e_imsi(p['imsi']))
-
-		# EF.ACC
-		#r = self._scc.select_file(['3f00', '7f20', '6f78'])
-		#self._scc.update_binary('6f78', self._e_imsi(p['imsi'])
-
-		# EF.SMSP
-		r = self._scc.select_file(['3f00', '7f10', '6f42'])
-		data, sw = self._scc.update_record('6f42', 1, lpad(p['smsp'], 80))
-
-		# Set the Ki using proprietary command
-		pdu = '80d4020010' + p['ki']
-		data, sw = self._scc._tp.send_apdu(pdu)
-
-		# EF.HPLMN
-		r = self._scc.select_file(['3f00', '7f20', '6f30'])
-		size = int(r[-1][4:8], 16)
-		hplmn = self._e_plmn(p['mcc'], p['mnc'])
-		self._scc.update_binary('6f30', hplmn + 'ff' * (size-3))
-
-		# EF.SPN (Service Provider Name)
-		r = self._scc.select_file(['3f00', '7f20', '6f30'])
-		size = int(r[-1][4:8], 16)
-		# FIXME
-
-		# FIXME: EF.MSISDN
-
-	def erase(self):
-		return
-
-class SysmoSIMgr1(GrcardSim):
-	"""
-	sysmocom sysmoSIM-GR1
-	These cards have a much more regular ISO 7816-4 / TS 11.11 structure,
-	and use standard UPDATE RECORD / UPDATE BINARY commands except for Ki.
-	"""
-	name = 'sysmosim-gr1'
-
-	# In order for autodetection ...
-
-class SysmoUSIMgr1(Card):
-	"""
-	sysmocom sysmoUSIM-GR1
-	"""
-	name = 'sysmoUSIM-GR1'
-
-	@classmethod
-	def autodetect(kls, scc):
-		# TODO: Access the ATR
-		return None
-
-	def program(self, p):
-		# TODO: check if verify_chv could be used or what it needs
-		# self._scc.verify_chv(0x0A, [0x33,0x32,0x32,0x31,0x33,0x32,0x33,0x32])
-		# Unlock the card..
-		data, sw = self._scc._tp.send_apdu_checksw("0020000A083332323133323332")
-
-		# TODO: move into SimCardCommands
-		par = ( p['ki'] +			# 16b  K
-			p['opc'] +			# 32b  OPC
-			self._e_iccid(p['iccid']) +	# 10b  ICCID
-			self._e_imsi(p['imsi'])		#  9b  IMSI_len + id_type(9) + IMSI
-			)
-		data, sw = self._scc._tp.send_apdu_checksw("0099000033" + par)
-
-	def erase(self):
-		return
-
-_cards_classes = [ FakeMagicSim, SuperSim, MagicSim, GrcardSim,
-		   SysmoSIMgr1, SysmoUSIMgr1 ]
+from typing import Optional, Tuple
+from osmocom.utils import *
+
+from pySim.ts_102_221 import EF_DIR, CardProfileUICC
+from pySim.ts_51_011 import DF_GSM
+from pySim.utils import SwHexstr
+from pySim.commands import Path, SimCardCommands
+
+class CardBase:
+    """General base class for some kind of telecommunications card."""
+    def __init__(self, scc: SimCardCommands):
+        self._scc = scc
+        self._aids = []
+
+    def reset(self) -> Optional[Hexstr]:
+        rc = self._scc.reset_card()
+        if rc == 1:
+            return self._scc.get_atr()
+        return None
+
+    def set_apdu_parameter(self, cla: Hexstr, sel_ctrl: Hexstr) -> None:
+        """Set apdu parameters (class byte and selection control bytes)"""
+        self._scc.cla_byte = cla
+        self._scc.sel_ctrl = sel_ctrl
+
+    def get_apdu_parameter(self) -> Tuple[Hexstr, Hexstr]:
+        """Get apdu parameters (class byte and selection control bytes)"""
+        return (self._scc.cla_byte, self._scc.sel_ctrl)
+
+    def erase(self):
+        print("warning: erasing is not supported for specified card type!")
+
+    def file_exists(self, fid: Path) -> bool:
+        """Determine if the file exists (and is not deactivated)."""
+        res_arr = self._scc.try_select_path(fid)
+        for res in res_arr:
+            if res[1] != '9000':
+                return False
+        try:
+            d = CardProfileUICC.decode_select_response(res_arr[-1][0])
+            if d.get('life_cycle_status_integer', 'operational_activated') != 'operational_activated':
+                return False
+        except:
+            pass
+        return True
+
+    def read_aids(self) -> List[Hexstr]:
+        # a non-UICC doesn't have any applications. Convenience helper to avoid
+        # callers having to do hasattr('read_aids') ahead of every call.
+        return []
+
+    def adf_present(self, adf: str = "usim") -> bool:
+        # a non-UICC doesn't have any applications. Convenience helper to avoid
+        # callers having to do hasattr('adf_present') ahead of every call.
+        return False
+
+    def select_adf_by_aid(self, adf: str = "usim", scc: Optional[SimCardCommands] = None) -> Tuple[Optional[Hexstr], Optional[SwHexstr]]:
+        # a non-UICC doesn't have any applications. Convenience helper to avoid
+        # callers having to do hasattr('select_adf_by_aid') ahead of every call.
+        return (None, None)
+
+
+class SimCardBase(CardBase):
+    """Here we only add methods for commands specified in TS 51.011, without
+    any higher-layer processing."""
+    name = 'SIM'
+
+    def __init__(self, scc: SimCardCommands):
+        super().__init__(scc)
+        self._scc.cla_byte = "A0"
+        self._scc.sel_ctrl = "0000"
+
+    def probe(self) -> bool:
+        df_gsm = DF_GSM()
+        return self.file_exists(df_gsm.fid)
+
+
+class UiccCardBase(SimCardBase):
+    name = 'UICC'
+
+    def __init__(self, scc: SimCardCommands):
+        super().__init__(scc)
+        self._scc.cla_byte = "00"
+        self._scc.sel_ctrl = "0004"  # request an FCP
+        # See also: ETSI TS 102 221, Table 9.3
+        self._adm_chv_num = 0x0A
+
+    def probe(self) -> bool:
+        # EF.DIR is a mandatory EF on all ICCIDs; however it *may* also exist on a TS 51.011 SIM
+        ef_dir = EF_DIR()
+        return self.file_exists(ef_dir.fid)
+
+    def read_aids(self) -> List[Hexstr]:
+        """Fetch all the AIDs present on UICC"""
+        self._aids = []
+        try:
+            ef_dir = EF_DIR()
+            # Find out how many records the EF.DIR has
+            # and store all the AIDs in the UICC
+            rec_cnt = self._scc.record_count(ef_dir.fid)
+            for i in range(0, rec_cnt):
+                rec = self._scc.read_record(ef_dir.fid, i + 1)
+                if (rec[0][0:2], rec[0][4:6]) == ('61', '4f') and len(rec[0]) > 12 \
+                        and rec[0][8:8 + int(rec[0][6:8], 16) * 2] not in self._aids:
+                    self._aids.append(rec[0][8:8 + int(rec[0][6:8], 16) * 2])
+        except Exception as e:
+            print("Can't read AIDs from SIM -- %s" % (str(e),))
+            self._aids = []
+        return self._aids
+
+    @staticmethod
+    def _get_aid(adf="usim") -> Optional[Hexstr]:
+        aid_map = {}
+        # First (known) halves of the U/ISIM AID
+        aid_map["usim"] = "a0000000871002"
+        aid_map["isim"] = "a0000000871004"
+        adf = adf.lower()
+        if adf in aid_map:
+            return aid_map[adf]
+        return None
+
+    def _complete_aid(self, aid: Hexstr) -> Optional[Hexstr]:
+        """find the complete version of an ADF.U/ISIM AID"""
+        # Find full AID by partial AID:
+        if is_hex(aid):
+            for aid_known in self._aids:
+                if len(aid_known) >= len(aid) and aid == aid_known[0:len(aid)]:
+                    return aid_known
+        return None
+
+    def adf_present(self, adf: str = "usim") -> bool:
+        """Check if the AID of the specified ADF is present in EF.DIR (call read_aids before use)"""
+        aid = self._get_aid(adf)
+        if aid:
+            aid_full = self._complete_aid(aid)
+            if aid_full:
+                return True
+        return False
+
+    def select_adf_by_aid(self, adf: str = "usim", scc: Optional[SimCardCommands] = None) -> Tuple[Optional[Hexstr], Optional[SwHexstr]]:
+        """Select ADF.U/ISIM in the Card using its full AID"""
+        # caller may pass a custom scc; we fall back to default
+        scc = scc or self._scc
+        if is_hex(adf):
+            aid = adf
+        else:
+            aid = self._get_aid(adf)
+        if aid:
+            aid_full = self._complete_aid(aid)
+            if aid_full:
+                return scc.select_adf(aid_full)
+            # If we cannot get the full AID, try with short AID
+            return scc.select_adf(aid)
+        return (None, None)
+
+def card_detect(scc: SimCardCommands) -> Optional[CardBase]:
+    # UICC always has higher preference, as a UICC might also contain a SIM application
+    uicc = UiccCardBase(scc)
+    if uicc.probe():
+        return uicc
+
+    # this is for detecting a real, classic TS 11.11 SIM card without any UICC support
+    sim = SimCardBase(scc)
+    if sim.probe():
+        return sim
+
+    return None
