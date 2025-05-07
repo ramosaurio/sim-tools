@@ -212,7 +212,7 @@ For example, an SMS TPDU like `1100...` is parsed as:
 - Destination number and payload encoded in semi-octet format
 
 > 📌 **Note**: The decoding logic and structural understanding were based on:
-> • [ETSI TS 102 223 – SIM Toolkit for UICC](https://www.etsi.org/deliver/etsi_ts/102200_102299/102223/17.01.00_60/ts_102223v170100p.pdf)  
+> • [ETSI TS 123 140 – SIM Toolkit for UICC](https://www.etsi.org/deliver/etsi_ts/123000_123099/123040/18.00.00_60/ts_123040v180000p.pdf)  
 > • [3GPP TS 23.040 – Technical realization of SMS (GSM 03.40)](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=749)  
 > • [pysim source code](https://github.com/osmocom/pysim)
 
