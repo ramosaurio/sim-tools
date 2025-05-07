@@ -301,7 +301,7 @@ This project is open for **educational and research use only**. Please respect t
 
 - **Original Authors**: Osmocom Community  
 - **Enhanced by**: Rafael Moreno Campos
-- **GitHub**: [https://github.com/tu-usuario](https://github.com/tu-usuario)
+- **GitHub**: [https://github.com/ramosaurio](https://github.com/ramosaurio)
 
 ---
 
