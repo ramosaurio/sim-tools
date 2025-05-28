@@ -52,7 +52,7 @@ To get started with deploying a SIM Toolkit applet using the updated `shadysim` 
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/your-org/sim-tools.git
+git clone https://github.com/ramosaurio/sim-tools.git
 cd sim-tools/shadysim
 ```
 
@@ -66,6 +66,7 @@ source venv/bin/activate
 ### 3. Install Dependencies
 
 ```bash
+sudo apt update && sudo apt install pcscd libpcsclite-dev
 pip install -r requirements.txt
 ```
 
